@@ -4,10 +4,10 @@ import 'package:flutter/foundation.dart'; // kIsWeb
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'package:http/http.dart' as http;
 import 'myappbar.dart';
 import 'routes.dart';
+import 'package:cloudinary_public/cloudinary_public.dart';
 
 class JobSeekerScreen extends StatefulWidget {
   const JobSeekerScreen({super.key});
@@ -35,8 +35,11 @@ class _JobSeekerSignUpState extends State<JobSeekerScreen> {
   final idController = TextEditingController();
   final aboutController = TextEditingController();
   final passwordController = TextEditingController();
-
-  final supabase = Supabase.instance.client;
+  final cloudinary = CloudinaryPublic(
+    "drrf4akxv", // cloud name
+    "job_upload", // upload preset
+    cache: false,
+  );
 
   // ---------------- PICK PROFILE IMAGE ----------------
   Future<void> pickProfileImage() async {
@@ -49,6 +52,18 @@ class _JobSeekerSignUpState extends State<JobSeekerScreen> {
       }
       setState(() {});
     }
+  }
+
+  //------------
+  Future<String> uploadImage(File file) async {
+    CloudinaryResponse res = await cloudinary.uploadFile(
+      CloudinaryFile.fromFile(
+        file.path,
+        resourceType: CloudinaryResourceType.Image,
+      ),
+    );
+
+    return res.secureUrl;
   }
 
   // ---------------- PICK CERTIFICATE ----------------
@@ -69,94 +84,64 @@ class _JobSeekerSignUpState extends State<JobSeekerScreen> {
     }
   }
 
+  //---------
+  Future<String> uploadDoc(File file) async {
+    CloudinaryResponse res = await cloudinary.uploadFile(
+      CloudinaryFile.fromFile(
+        file.path,
+        resourceType: CloudinaryResourceType.Raw,
+      ),
+    );
+
+    return res.secureUrl;
+  }
+
   // ---------------- SIGN UP ----------------
   Future<void> signUpDirect() async {
     if (!_formKey.currentState!.validate() ||
         selectedMajor == null ||
-        selectedExperience == null) {
+        selectedExperience == null ||
+        _profileImageFile == null ||
+        _certificateFile == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please fill all required fields")),
+        const SnackBar(content: Text("Fill all fields + upload files")),
       );
       return;
     }
 
     try {
-      final userId = DateTime.now().millisecondsSinceEpoch.toString();
+      // رفع على Cloudinary فقط
+      String photoUrl = await uploadImage(_profileImageFile!);
+      String certificateUrl = await uploadDoc(_certificateFile!);
 
-      // Upload profile image
-      String profileUrl = "";
-      final profilePath = "$userId/profile.png";
-      if (kIsWeb && _profileImageWeb != null) {
-        await supabase.storage
-            .from('profile-photos')
-            .uploadBinary(
-              profilePath,
-              _profileImageWeb!,
-              fileOptions: const FileOptions(upsert: true),
-            );
-        profileUrl = supabase.storage
-            .from('profile-photos')
-            .getPublicUrl(profilePath);
-      } else if (!kIsWeb && _profileImageFile != null) {
-        await supabase.storage
-            .from('profile-photos')
-            .upload(
-              profilePath,
-              _profileImageFile!,
-              fileOptions: const FileOptions(upsert: true),
-            );
-        profileUrl = supabase.storage
-            .from('profile-photos')
-            .getPublicUrl(profilePath);
+      var request = http.MultipartRequest('POST', Uri.parse('0'));
+
+      request.fields['name'] = nameController.text.trim();
+      request.fields['email'] = emailController.text.trim();
+      request.fields['password'] = passwordController.text.trim();
+      request.fields['id_number'] = idController.text.trim();
+      request.fields['major'] = selectedMajor!;
+      request.fields['experience_area'] = selectedExperience!;
+      request.fields['about_me'] = aboutController.text.trim();
+
+      request.fields['photo'] = photoUrl;
+      request.fields['certificate'] = certificateUrl;
+
+      var response = await request.send();
+      var result = await response.stream.bytesToString();
+
+      print("STATUS: ${response.statusCode}");
+      print("BODY: $result");
+
+      if (response.statusCode == 200) {
+        successDialog();
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(result)));
       }
-
-      // Upload certificate
-      String certificateUrl = "";
-      final certificatePath = "$userId/certificate.pdf";
-      if (kIsWeb && _certificateWeb != null) {
-        await supabase.storage
-            .from('certificates')
-            .uploadBinary(
-              certificatePath,
-              _certificateWeb!,
-              fileOptions: const FileOptions(upsert: true),
-            );
-        certificateUrl = supabase.storage
-            .from('certificates')
-            .getPublicUrl(certificatePath);
-      } else if (!kIsWeb && _certificateFile != null) {
-        await supabase.storage
-            .from('certificates')
-            .upload(
-              certificatePath,
-              _certificateFile!,
-              fileOptions: const FileOptions(upsert: true),
-            );
-        certificateUrl = supabase.storage
-            .from('certificates')
-            .getPublicUrl(certificatePath);
-      }
-
-      // Insert into database
-      await supabase.from('applicant_profiles').insert({
-        'uuid': userId,
-        'full_name': nameController.text.trim(),
-        'email': emailController.text.trim(),
-        'national_id': idController.text.trim(),
-        'major': selectedMajor,
-        'experience_summary': selectedExperience,
-        'bio': aboutController.text.trim(),
-        'profile_image': profileUrl,
-        'certificate': certificateUrl,
-      });
-
-      successDialog();
-    } catch (e, st) {
-      print("Error: $e");
-      print("Stack: $st");
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(e.toString())));
+    } catch (e) {
+      print("ERROR: $e");
     }
   }
 
